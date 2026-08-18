@@ -11,6 +11,7 @@ import com.linkduel.dto.UserVO;
 import com.linkduel.entity.User;
 import com.linkduel.game.BoardGenerator;
 import com.linkduel.mapper.UserMapper;
+import com.linkduel.ws.GameEventPublisher;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.redis.core.StringRedisTemplate;
@@ -20,6 +21,7 @@ import org.springframework.stereotype.Service;
 import java.security.SecureRandom;
 import java.time.Duration;
 import java.util.List;
+import java.util.Map;
 
 /**
  * 匹配:Redis ZSET 队列 + Lua 原子配对。
@@ -39,6 +41,7 @@ public class MatchmakingService {
     private final GameProperties gameProperties;
     private final PresenceService presenceService;
     private final DefaultRedisScript<List> matchScript;
+    private final GameEventPublisher eventPublisher;
 
     /**
      * 加入匹配。返回 queued(继续等)或 matched(当场配对成功)。
@@ -81,6 +84,11 @@ public class MatchmakingService {
 
         String roomId = createRoom(otherId, userId, opponent, user);
         log.info("匹配成功 roomId={} playerA={} playerB={}", roomId, otherId, userId);
+        // 双方都会收到 match-found(先入队者此刻才知道配对成功;后入队者以 REST 返回为准)
+        eventPublisher.toUser(otherId, "match", "match-found",
+                Map.of("roomId", roomId, "opponent", UserVO.from(user)));
+        eventPublisher.toUser(userId, "match", "match-found",
+                Map.of("roomId", roomId, "opponent", UserVO.from(opponent)));
         return new JoinResult("matched", roomId, UserVO.from(opponent));
     }
 
