@@ -16,6 +16,7 @@ public enum ErrorCode {
     UNAUTHORIZED(40100, "未登录或登录已过期"),
     FORBIDDEN(40300, "无权操作"),
     NOT_IN_GAME(40410, "当前没有进行中的对局"),
+    GAME_NOT_STARTED(42205, "对局尚未开始"),
     ROOM_NOT_FOUND(40420, "对局不存在或已结束"),
     ALREADY_IN_QUEUE(40900, "已在匹配队列中"),
     ALREADY_MATCHED(40901, "已在匹配中,无法取消"),

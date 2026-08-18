@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.linkduel.mapper.GameRecordMapper">
+
+    <sql id="allColumns">
+        id, game_id, player_a_id, player_b_id, score_a, score_b,
+        winner_id, status, reason, started_at, ended_at, created_at
+    </sql>
+
+    <insert id="insert" parameterType="com.linkduel.entity.GameRecord" useGeneratedKeys="true" keyProperty="id">
+        INSERT INTO game_records (game_id, player_a_id, player_b_id, score_a, score_b,
+                                  winner_id, status, reason, started_at, ended_at)
+        VALUES (#{gameId}, #{playerAId}, #{playerBId}, #{scoreA}, #{scoreB},
+                #{winnerId}, #{status}, #{reason}, #{startedAt}, #{endedAt})
+    </insert>
+
+    <select id="findByGameId" resultType="com.linkduel.entity.GameRecord">
+        SELECT <include refid="allColumns"/>
+        FROM game_records
+        WHERE game_id = #{gameId}
+    </select>
+
+</mapper>

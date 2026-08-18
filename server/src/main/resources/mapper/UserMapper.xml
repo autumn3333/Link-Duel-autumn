@@ -18,6 +18,13 @@
         WHERE id = #{id}
     </select>
 
+    <select id="findByIdForUpdate" resultType="com.linkduel.entity.User">
+        SELECT <include refid="allColumns"/>
+        FROM users
+        WHERE id = #{id}
+        FOR UPDATE
+    </select>
+
     <select id="findByIds" resultType="com.linkduel.entity.User">
         SELECT <include refid="allColumns"/>
         FROM users

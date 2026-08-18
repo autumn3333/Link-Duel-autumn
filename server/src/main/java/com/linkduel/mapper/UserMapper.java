@@ -11,6 +11,9 @@ public interface UserMapper {
 
     User findById(@Param("id") Long id);
 
+    /** 结算事务内行锁读取 */
+    User findByIdForUpdate(@Param("id") Long id);
+
     List<User> findByIds(@Param("ids") List<Long> ids);
 
     int insert(User user);
