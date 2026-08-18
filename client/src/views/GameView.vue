@@ -76,12 +76,34 @@ const oppScore = computed(() => {
   return players.value.a.id === meId.value ? snapshot.value.scoreB : snapshot.value.scoreA
 })
 
+/** 兜底:等不到快照时核对服务端对局状态(对局结束后的刷新 / 房间已结算) */
+async function checkRoomAlive(): Promise<void> {
+  if (snapshot.value || over.value) return
+  try {
+    const current = await api.currentGame()
+    if (current.roomId) {
+      if (current.roomId !== roomId) {
+        router.replace({ name: 'game', params: { roomId: current.roomId } })
+      }
+    } else {
+      ElMessage.info('对局已结束')
+      router.replace({ name: 'lobby' })
+    }
+  } catch {
+    /* 后端暂不可用(如服务重启中),重连成功后再补查 */
+  }
+}
+
 onMounted(async () => {
   if (!isConnected()) connect()
   unsubscribers.push(
     onStatusChange((ok) => {
       connected.value = ok
-      if (ok) ElMessage.success('连接已恢复,对局继续')
+      if (ok) {
+        ElMessage.success('连接已恢复,对局继续')
+        // 重连后 2 秒仍无快照 → 房间可能已不存在
+        setTimeout(() => void checkRoomAlive(), 2000)
+      }
     }),
   )
   unsubscribers.push(subscribeSnapshot(onSnapshot))
@@ -95,20 +117,8 @@ onMounted(async () => {
       return
     }
   }
-  // 兜底:3 秒内没收到快照说明房间已不存在(对局结束后的刷新等)
-  snapshotTimer = setTimeout(async () => {
-    if (!snapshot.value && !over.value) {
-      try {
-        const current = await api.currentGame()
-        if (!current.roomId) {
-          ElMessage.info('对局已结束')
-          router.replace({ name: 'lobby' })
-        }
-      } catch {
-        /* 忽略 */
-      }
-    }
-  }, 3000)
+  // 首次进入的兜底:3 秒内没收到快照说明房间已不存在
+  snapshotTimer = setTimeout(() => void checkRoomAlive(), 3000)
 })
 
 onUnmounted(() => {

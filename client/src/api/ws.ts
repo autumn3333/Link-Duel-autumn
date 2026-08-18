@@ -84,7 +84,8 @@ export function connect(): void {
     if (client === newClient) scheduleReconnect()
   }
   newClient.onWebSocketError = () => {
-    /* 统一由 onDisconnect 处理 */
+    // 首次建连失败也可能不触发 onDisconnect,这里兜底调度重连(防重复由 scheduleReconnect 保证)
+    if (client === newClient) scheduleReconnect()
   }
   newClient.onStompError = () => {
     /* 协议错误(如订阅已结束对局)不致命,等待后续恢复流程 */

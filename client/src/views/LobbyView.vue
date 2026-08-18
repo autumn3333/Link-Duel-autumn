@@ -26,30 +26,41 @@ function onMatchFound(data: MatchFoundData) {
   enterGame(data.roomId)
 }
 
-onMounted(async () => {
-  unsubscribeMatch = subscribeMatch(onMatchFound)
-  unsubscribeStatus = onStatusChange(async (ok) => {
-    connected.value = ok
-    // 重连成功且还在排队:补查一次对局状态(防止错过匹配通知)
-    if (ok && matching.value) {
-      try {
-        const current = await api.currentGame()
-        if (current.roomId) enterGame(current.roomId)
-      } catch {
-        /* 忽略,下次事件再补 */
-      }
-    }
-  })
+/** 恢复未结束的对局(刷新页面 / 断线重连 / 错过匹配通知的兜底) */
+async function restoreGame(): Promise<void> {
   try {
-    await auth.loadMe()
     const current = await api.currentGame()
     if (current.roomId) {
       ElMessage.info('检测到未结束的对局,正在恢复…')
       enterGame(current.roomId)
     }
   } catch {
-    /* 401 已由 http 层跳转登录 */
+    /* 后端暂不可用(如服务重启中),重连成功后再补查 */
   }
+}
+
+onMounted(async () => {
+  unsubscribeMatch = subscribeMatch(onMatchFound)
+  unsubscribeStatus = onStatusChange(async (ok) => {
+    connected.value = ok
+    // 重连成功:补查一次对局状态(排队中防止错过匹配通知;对局中恢复进入)
+    if (ok && (matching.value || !auth.user)) {
+      if (!auth.user) {
+        try {
+          await auth.loadMe()
+        } catch {
+          return
+        }
+      }
+      await restoreGame()
+    }
+  })
+  try {
+    await auth.loadMe()
+  } catch {
+    /* 401 已由 http 层跳转登录;后端未启动时稍后重连再补 */
+  }
+  await restoreGame()
 })
 
 onUnmounted(() => {
