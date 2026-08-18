@@ -19,6 +19,7 @@ public enum ErrorCode {
     ROOM_NOT_FOUND(40420, "对局不存在或已结束"),
     ALREADY_IN_QUEUE(40900, "已在匹配队列中"),
     ALREADY_MATCHED(40901, "已在匹配中,无法取消"),
+    ALREADY_IN_GAME(40903, "已在对局中"),
     GAME_OVER(40902, "对局已结束"),
     INVALID_PATH(42200, "所选两个图案无法连通"),
     CELL_ELIMINATED(42201, "所选格子已被消除"),
