@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.linkduel.mapper.UserMapper">
+
+    <sql id="allColumns">
+        id, email, password_hash, nickname, points, wins, losses, draws, created_at, updated_at
+    </sql>
+
+    <select id="findByEmail" resultType="com.linkduel.entity.User">
+        SELECT <include refid="allColumns"/>
+        FROM users
+        WHERE email = #{email}
+    </select>
+
+    <select id="findById" resultType="com.linkduel.entity.User">
+        SELECT <include refid="allColumns"/>
+        FROM users
+        WHERE id = #{id}
+    </select>
+
+    <select id="findByIds" resultType="com.linkduel.entity.User">
+        SELECT <include refid="allColumns"/>
+        FROM users
+        WHERE id IN
+        <foreach collection="ids" item="id" open="(" separator="," close=")">
+            #{id}
+        </foreach>
+    </select>
+
+    <insert id="insert" parameterType="com.linkduel.entity.User" useGeneratedKeys="true" keyProperty="id">
+        INSERT INTO users (email, password_hash, nickname, points, wins, losses, draws)
+        VALUES (#{email}, #{passwordHash}, #{nickname}, #{points}, #{wins}, #{losses}, #{draws})
+    </insert>
+
+    <update id="updateStats" parameterType="com.linkduel.entity.User">
+        UPDATE users
+        SET points = #{points},
+            wins   = #{wins},
+            losses = #{losses},
+            draws  = #{draws}
+        WHERE id = #{id}
+    </update>
+
+    <select id="findAllForLeaderboard" resultType="com.linkduel.entity.User">
+        SELECT <include refid="allColumns"/>
+        FROM users
+        ORDER BY points DESC, id ASC
+    </select>
+
+</mapper>
