@@ -139,7 +139,8 @@ function doSubscribe(spec: SubscriptionSpec): void {
   if (!client?.connected) return
   client.subscribe(spec.destination, (msg: IMessage) => {
     const event = JSON.parse(msg.body) as GameEvent
-    if (event.type === 'heartbeat') {
+    // 每个事件都带服务端时间,持续校准时钟偏移(倒计时不受本机时钟影响)
+    if (typeof event.serverNow === 'number') {
       serverOffset = event.serverNow - Date.now()
     }
     spec.handler(event)

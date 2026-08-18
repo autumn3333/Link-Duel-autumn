@@ -143,6 +143,9 @@ public class AuthChannelInterceptor implements ChannelInterceptor {
         room.setStartedAt(now);
         room.setDeadline(now + gameProperties.getDurationSeconds() * 1000L);
         redis.opsForZSet().add(RedisKeys.GAMES_ACTIVE, room.getRoomId(), room.getDeadline());
+        // 后进入的玩家可能只拿到 waiting 快照,广播 started 让其客户端进入对局
+        eventPublisher.toRoom(room.getRoomId(), "started",
+                Map.of("startedAt", room.getStartedAt(), "deadline", room.getDeadline()));
     }
 
     /** 延迟 200ms 推送快照,避开"消息先于订阅注册到达"的竞态 */
