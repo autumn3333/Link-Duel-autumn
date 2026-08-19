@@ -91,20 +91,23 @@ class Match3EngineTest {
     void findMatchesDetectsHorizontalRun() {
         Cell[] b = board(
                 "XYXYXYXY",
+                "YXYXYXYX",
                 "XYAAAYXY",
+                "YXYXYXYX",
+                "XYXYXYXY",
+                "YXYXYXYX",
+                "XYXYXYXY",
                 "YXYXYXYX");
-        assertEquals(Set.of(10, 11, 12), Match3Engine.findMatches(b, 8));
+        assertEquals(Set.of(18, 19, 20), Match3Engine.findMatches(b, 8));
     }
 
     @Test
     void findMatchesDetectsVerticalRun() {
         Cell[] b = board(
-                "XYX",
-                "YAY",
                 "XAX",
                 "YAY",
-                "XYX");
-        assertEquals(Set.of(4, 7, 10), Match3Engine.findMatches(b, 3));
+                "XAX");
+        assertEquals(Set.of(1, 4, 7), Match3Engine.findMatches(b, 3));
     }
 
     @Test
@@ -170,16 +173,18 @@ class Match3EngineTest {
     @Test
     void resolveSwapCascadesWithGravityAndRefill() {
         // 交换 (5,1)↔(5,2):第 4-6 行第 2 列形成纵向 A 三连;
-        // 消除后 (0,2) 的 A 落到第 3 行,与 (3,0)/(3,1) 的 A 连锁成横向三连
+        // 消除后 (0,2) 的 A 落到第 3 行,与 (3,0)/(3,1) 的 A 连锁成横向三连。
+        // 棋盘基于交错底色(XY 相间)手工构造,除设计的两步外不存在任何其他三连。
         Cell[] b = board(
                 "XYAYXYXY",
                 "YXYXYXYX",
                 "XYXYXYXY",
-                "AABXYXYX",
+                "AABYYXYX",
                 "XYAXXYXY",
-                "YABXYXYX",
+                "YABYYXYX",
                 "XYAYXYXY",
                 "YXYXYXYX");
+        assertTrue(Match3Engine.findMatches(b, SIZE).isEmpty(), "交换前棋盘不应有三连");
         Match3Engine.MoveResult result = Match3Engine.resolveSwap(
                 b, SIZE, 41, 42, new CyclingRandom());
         assertNotNull(result);
