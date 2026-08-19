@@ -5,6 +5,7 @@ import com.linkduel.service.MatchmakingService;
 import com.linkduel.service.PresenceService;
 import com.linkduel.service.RedisKeys;
 import com.linkduel.service.RoomLocks;
+import com.linkduel.service.SettlementService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.context.event.EventListener;
@@ -19,8 +20,7 @@ import java.util.Map;
  * WS 断线处理:
  * <ul>
  *   <li>排队中掉线 → 移出匹配队列(配合 Lua 的在线过滤,死条目不会卡住队头);</li>
- *   <li>对局中掉线 → 房间在线标志置 false + 记录 offlineSince,广播 player-offline,
- *       GameSweeper 依此执行 90 秒宽限 → 判负 / 双断线取消;</li>
+ *   <li>对局中掉线 → 立即 FORFEIT 结算(在线方胜 +3)并广播 gameover,双方回大厅;</li>
  *   <li>旧会话迟到的 DISCONNECT(重连竞态)由 PresenceService 的会话比对过滤,不误伤新连接。</li>
  * </ul>
  */
@@ -33,7 +33,7 @@ public class WebSocketEventListener {
     private final StringRedisTemplate redis;
     private final MatchmakingService matchmakingService;
     private final RoomLocks roomLocks;
-    private final GameEventPublisher eventPublisher;
+    private final SettlementService settlementService;
 
     @EventListener
     public void onDisconnect(SessionDisconnectEvent event) {
@@ -52,34 +52,33 @@ public class WebSocketEventListener {
         }
         // 排队中掉线:移出队列
         redis.opsForZSet().remove(RedisKeys.MATCH_QUEUE, String.valueOf(userId));
-        // 对局中掉线:标记离线,进入宽限期(在线方继续玩,对局不暂停)
+        // 对局中掉线:立即结算,在线方胜
         String roomId = redis.opsForValue().get(RedisKeys.userGame(userId));
         if (roomId == null) {
             return;
         }
-        roomLocks.withLock(roomId, () -> markOfflineInRoom(roomId, userId));
+        roomLocks.withLock(roomId, () -> settleOnDisconnect(roomId, userId));
     }
 
-    private void markOfflineInRoom(String roomId, Long userId) {
+    private void settleOnDisconnect(String roomId, Long userId) {
         RoomState room = matchmakingService.loadRoom(roomId);
         if (room == null || room.isSettled()) {
             return;
         }
+        // 先标记断线方离线(computeOutcome 依此判定在线方获胜),再结算
         boolean changed = false;
-        long now = System.currentTimeMillis();
         if (userId.equals(room.getPlayerAId()) && room.isOnlineA()) {
             room.setOnlineA(false);
-            room.setOfflineSinceA(now);
             changed = true;
         } else if (userId.equals(room.getPlayerBId()) && room.isOnlineB()) {
             room.setOnlineB(false);
-            room.setOfflineSinceB(now);
             changed = true;
         }
-        if (changed) {
-            matchmakingService.saveRoom(room);
-            eventPublisher.toRoom(roomId, "player-offline", Map.of("userId", userId));
-            log.info("玩家断线 roomId={} userId={}", roomId, userId);
+        if (!changed) {
+            return;
         }
+        matchmakingService.saveRoom(room);
+        log.info("玩家断线,立即结算 roomId={} userId={}", roomId, userId);
+        settlementService.settleGame(roomId, SettlementService.SettleTrigger.FORFEIT);
     }
 }

@@ -80,7 +80,7 @@ public class AuthChannelInterceptor implements ChannelInterceptor {
         accessor.getSessionAttributes().put("userId", userId);
         // 绑定会话 id:断线事件据此区分旧会话与新连接(重连竞态防护)
         presenceService.setOnlineSession(userId, accessor.getSessionId());
-        // 已在对局中的用户重连:立即更新房间在线标志(宽限期计时从这里停止)
+        // 已在对局中的用户重连:恢复房间在线标志
         String roomId = redis.opsForValue().get(RedisKeys.userGame(userId));
         if (roomId != null) {
             markPlayerOnline(roomId, userId);
@@ -134,11 +134,9 @@ public class AuthChannelInterceptor implements ChannelInterceptor {
             boolean changed = false;
             if (userId.equals(room.getPlayerAId()) && !room.isOnlineA()) {
                 room.setOnlineA(true);
-                room.setOfflineSinceA(0);
                 changed = true;
             } else if (userId.equals(room.getPlayerBId()) && !room.isOnlineB()) {
                 room.setOnlineB(true);
-                room.setOfflineSinceB(0);
                 changed = true;
             }
             if (room.isWaiting() && room.isOnlineA() && room.isOnlineB()) {
@@ -147,7 +145,6 @@ public class AuthChannelInterceptor implements ChannelInterceptor {
             }
             if (changed) {
                 matchmakingService.saveRoom(room);
-                eventPublisher.toRoom(roomId, "player-online", Map.of("userId", userId));
             }
         });
     }
@@ -184,7 +181,6 @@ public class AuthChannelInterceptor implements ChannelInterceptor {
         data.put("scoreB", room.getScoreB());
         data.put("startedAt", room.getStartedAt());
         data.put("deadline", room.getDeadline());
-        data.put("reshuffleUsed", room.isReshuffleUsed());
         data.put("players", Map.of(
                 "a", Map.of("id", room.getPlayerAId(), "nickname", room.getPlayerANickname(), "online", room.isOnlineA()),
                 "b", Map.of("id", room.getPlayerBId(), "nickname", room.getPlayerBNickname(), "online", room.isOnlineB())));

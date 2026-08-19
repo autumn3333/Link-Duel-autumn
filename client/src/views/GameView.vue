@@ -7,22 +7,23 @@ import {
   connect,
   isConnected,
   onStatusChange,
-  sendMove,
+  sendSwap,
   subscribeErrors,
   subscribeRoom,
   subscribeSnapshot,
 } from '@/api/ws'
 import { useAuthStore } from '@/stores/auth'
-import { findPath } from '@/utils/pathValidator'
 import { BOARD_SIZE, ERROR_MESSAGE } from '@/utils/constants'
 import type {
   CellState,
-  EliminatedData,
+  ClearedData,
   ErrorData,
   GameEvent,
   GameOverData,
+  MovedData,
   PlayerInfo,
   SnapshotData,
+  Tile,
 } from '@/types/game'
 import GameBoard from '@/components/GameBoard.vue'
 import PlayerPanel from '@/components/PlayerPanel.vue'
@@ -31,7 +32,9 @@ import ResultModal from '@/components/ResultModal.vue'
 
 /**
  * 对局页:订阅房间事件流,棋盘/比分/倒计时全部以服务端事件为准。
- * 刷新或断线重连后,订阅自动恢复 + 服务端重推快照,即完成恢复。
+ * moved/cleared/reshuffled 按顺序入队回放(交换 200ms → 每连锁步消除 250ms +
+ * 下落 300ms),保证动画与棋盘状态一致。刷新或断线重连后,订阅自动恢复 +
+ * 服务端重推快照,即完成恢复;对手离线由服务端立即结算,gameover 弹窗回大厅。
  */
 const route = useRoute()
 const router = useRouter()
@@ -40,16 +43,36 @@ const auth = useAuthStore()
 const roomId = String(route.params.roomId)
 
 const snapshot = ref<SnapshotData | null>(null)
-const board = ref<CellState[]>([])
+const tiles = ref<Tile[]>([])
 const selected = ref<number[]>([])
-const elimination = ref<{ path: number[]; emoji: string } | null>(null)
 const over = ref<GameOverData | null>(null)
 const connected = ref(isConnected())
-const opponentOffline = ref(false)
 
 const unsubscribers: (() => void)[] = []
 let snapshotTimer: ReturnType<typeof setTimeout> | null = null
-let elimToken = 0
+
+// ---- 事件回放队列:动画按节奏依次播放,快照到达时整体重置 ----
+const queue: (() => Promise<void>)[] = []
+let pumping = false
+let queueToken = 0
+let tileKey = 0
+
+const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms))
+
+function enqueue(task: () => Promise<void>): void {
+  queue.push(task)
+  void pump()
+}
+
+async function pump(): Promise<void> {
+  if (pumping) return
+  pumping = true
+  while (queue.length > 0) {
+    const task = queue.shift()!
+    await task()
+  }
+  pumping = false
+}
 
 const meId = computed(() => auth.user?.id ?? 0)
 const players = computed(() => snapshot.value?.players ?? null)
@@ -128,8 +151,10 @@ onUnmounted(() => {
 
 function onSnapshot(data: SnapshotData) {
   snapshot.value = data
-  board.value = data.board.map((c) => ({ ...c }))
-  opponentOffline.value = !oppInfo.value?.online
+  // 快照是权威整体状态:作废未播完的动画,直接重建棋盘
+  queueToken += 1
+  queue.length = 0
+  tiles.value = tilesFromBoard(data.board)
 }
 
 function onError(data: ErrorData) {
@@ -139,29 +164,53 @@ function onError(data: ErrorData) {
 
 function onRoomEvent(event: GameEvent) {
   switch (event.type) {
-    case 'eliminated': {
-      const d = event.data as EliminatedData
-      if (snapshot.value) {
-        snapshot.value.scoreA = d.scoreA
-        snapshot.value.scoreB = d.scoreB
-      }
-      const token = ++elimToken
-      elimination.value = { path: d.path, emoji: d.emoji }
-      setTimeout(() => {
-        // 棋盘状态变更始终生效;动画清除仅在"仍是最新动画"时执行
-        const a = board.value[d.cellA]
-        const b = board.value[d.cellB]
-        if (a) a.eliminated = true
-        if (b) b.eliminated = true
-        if (elimToken === token) elimination.value = null
-      }, 650)
+    case 'moved': {
+      const d = event.data as MovedData
+      updateScores(d.scoreA, d.scoreB)
+      const token = queueToken
+      enqueue(async () => {
+        if (token !== queueToken) return
+        // 交换两格位置(key 不变 → FLIP 播放交换动画)
+        const a = tiles.value.find((t) => t.id === d.from)
+        const b = tiles.value.find((t) => t.id === d.to)
+        if (a && b) {
+          a.id = d.to
+          b.id = d.from
+          tiles.value = sortById([...tiles.value])
+        }
+        await sleep(200)
+      })
+      break
+    }
+    case 'cleared': {
+      const d = event.data as ClearedData
+      updateScores(d.scoreA, d.scoreB)
+      const token = queueToken
+      enqueue(async () => {
+        if (token !== queueToken) return
+        // 1. 消除动画:标记 dying
+        const eliminated = new Set(d.cells)
+        for (const t of tiles.value) {
+          if (eliminated.has(t.id)) t.dying = true
+        }
+        await sleep(250)
+        if (token !== queueToken) return
+        // 2. 下落 + 补块:存活方块沿用 key(FLIP 下落),顶部补块换新 key(入场)
+        tiles.value = rebuildBoard(d.board, eliminated)
+        await sleep(300)
+      })
       break
     }
     case 'reshuffled': {
       const d = event.data as { board: CellState[] }
-      board.value = d.board.map((c) => ({ ...c }))
-      selected.value = []
       ElMessage.info('棋盘无路可走,已自动洗牌')
+      const token = queueToken
+      enqueue(async () => {
+        if (token !== queueToken) return
+        tiles.value = tilesFromBoard(d.board)
+        selected.value = []
+        await sleep(300)
+      })
       break
     }
     case 'started': {
@@ -173,46 +222,100 @@ function onRoomEvent(event: GameEvent) {
       }
       break
     }
-    case 'player-online': {
-      const d = event.data as { userId: number }
-      if (d.userId === meId.value) break
-      opponentOffline.value = false
-      ElMessage.info('对手已重新连接')
-      break
-    }
-    case 'player-offline': {
-      const d = event.data as { userId: number }
-      if (d.userId === meId.value) break
-      opponentOffline.value = true
-      ElMessage.warning('对手已离线(90 秒宽限期,期间可重连)')
-      break
-    }
     case 'gameover':
       over.value = event.data as GameOverData
       break
   }
 }
 
+function updateScores(scoreA: number, scoreB: number) {
+  if (snapshot.value) {
+    snapshot.value.scoreA = scoreA
+    snapshot.value.scoreB = scoreB
+  }
+}
+
+// ---- 棋盘重建工具 ----
+
+/** 快照/洗牌:整盘全新方块 */
+function tilesFromBoard(board: CellState[]): Tile[] {
+  return sortById(
+    board.map((c) => ({ key: ++tileKey, id: c.id, emoji: c.emoji })),
+  )
+}
+
+function sortById(list: Tile[]): Tile[] {
+  return [...list].sort((a, b) => a.id - b.id)
+}
+
+/**
+ * 按"消除 → 下落 → 补块"重建方块列表:
+ * 每列自底向上收集存活方块(保留 key,下落为 FLIP 动画),顶部不足补新方块。
+ */
+function rebuildBoard(board: CellState[], eliminated: Set<number>): Tile[] {
+  const byId = new Map(tiles.value.map((t) => [t.id, t]))
+  const next: Tile[] = []
+  for (let c = 0; c < BOARD_SIZE; c++) {
+    const kept: Tile[] = []
+    for (let r = BOARD_SIZE - 1; r >= 0; r--) {
+      const id = r * BOARD_SIZE + c
+      const tile = byId.get(id)
+      if (tile && !eliminated.has(id)) kept.push(tile)
+    }
+    const column = board
+      .filter((cell) => cell.id % BOARD_SIZE === c)
+      .sort((x, y) => y.id - x.id) // 自底向上
+    let ki = 0
+    for (const cell of column) {
+      if (ki < kept.length) {
+        const tile = kept[ki++]
+        tile.id = cell.id
+        tile.emoji = cell.emoji
+        next.push(tile)
+      } else {
+        next.push({ key: ++tileKey, id: cell.id, emoji: cell.emoji })
+      }
+    }
+  }
+  return sortById(next)
+}
+
+// ---- 交互 ----
+
+function isAdjacent(a: number, b: number): boolean {
+  return (
+    Math.abs(Math.floor(a / BOARD_SIZE) - Math.floor(b / BOARD_SIZE)) +
+      Math.abs((a % BOARD_SIZE) - (b % BOARD_SIZE)) ===
+    1
+  )
+}
+
+/** 点选(原地按下松开):两个相邻格交换,不相邻则改为选中新格 */
 function onCellClick(id: number) {
   if (!meId.value || waiting.value || over.value) return
-  const cell = board.value[id]
-  if (!cell || cell.eliminated) return
   if (selected.value.includes(id)) {
-    selected.value = selected.value.filter((s) => s !== id)
+    selected.value = []
     return
   }
   if (selected.value.length === 1) {
     const a = selected.value[0]
-    if (findPath(board.value, BOARD_SIZE, a, id)) {
+    if (a !== id && isAdjacent(a, id)) {
       selected.value = []
-      sendMove(a, id)
-    } else {
+      sendSwap(a, id)
+    } else if (a !== id) {
       ElMessage.warning(ERROR_MESSAGE[42200])
       selected.value = [id]
     }
     return
   }
   selected.value = [id]
+}
+
+/** 拖动交换:合法性由服务端最终判定,非法会经 /user/queue/errors 提示 */
+function onSwap(from: number, to: number) {
+  if (!meId.value || waiting.value || over.value) return
+  selected.value = []
+  sendSwap(from, to)
 }
 
 function backToLobby() {
@@ -233,9 +336,6 @@ function backToLobby() {
     <div v-if="!connected" class="banner reconnect">
       网络连接已断开,正在自动重连…对局状态保存在服务器,恢复后自动继续
     </div>
-    <div v-if="connected && opponentOffline" class="banner offline">
-      对手已离线(90 秒宽限期,超时将判你获胜)
-    </div>
 
     <main v-if="snapshot && meInfo && oppInfo" class="arena">
       <PlayerPanel :player="oppInfo" :score="oppScore" :me="false" />
@@ -246,10 +346,10 @@ function backToLobby() {
       />
       <div class="board-wrap">
         <GameBoard
-          :board="board"
+          :tiles="tiles"
           :selected="selected"
-          :elimination="elimination"
           @cell-click="onCellClick"
+          @swap="onSwap"
         />
         <div v-if="waiting" class="waiting-mask">
           <p>⏳ 等待对手进入…</p>
@@ -306,11 +406,6 @@ function backToLobby() {
 .banner.reconnect {
   background: #fef0f0;
   color: #f56c6c;
-}
-
-.banner.offline {
-  background: #fdf6ec;
-  color: #e6a23c;
 }
 
 .arena {

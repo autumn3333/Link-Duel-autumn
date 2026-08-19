@@ -7,10 +7,22 @@ export interface UserInfo {
   points: number
 }
 
+/** 服务端棋盘格子:三消玩法棋盘永远全满,只有位置与图案 */
 export interface CellState {
   id: number
   emoji: string
-  eliminated: boolean
+}
+
+/**
+ * 客户端棋盘方块:key 为稳定身份(跨棋盘更新保留),驱动 TransitionGroup
+ * FLIP 动画——交换/下落时同一个 key 换位置即产生移动动画,补块才换新 key。
+ */
+export interface Tile {
+  key: number
+  id: number
+  emoji: string
+  /** 本连锁步被消除,播放消失动画后移除 */
+  dying?: boolean
 }
 
 export interface PlayerInfo {
@@ -27,16 +39,23 @@ export interface SnapshotData {
   scoreB: number
   startedAt: number
   deadline: number
-  reshuffleUsed: boolean
   players: { a: PlayerInfo; b: PlayerInfo }
 }
 
-export interface EliminatedData {
+/** moved 事件:交换动画 + 交换后的比分 */
+export interface MovedData {
   byUserId: number
-  cellA: number
-  cellB: number
-  emoji: string
-  path: number[]
+  from: number
+  to: number
+  scoreA: number
+  scoreB: number
+}
+
+/** cleared 事件:一个连锁步的消除格子 + 该步下落补块后的完整棋盘 */
+export interface ClearedData {
+  byUserId: number
+  cells: number[]
+  board: CellState[]
   scoreA: number
   scoreB: number
 }

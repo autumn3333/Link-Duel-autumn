@@ -19,16 +19,13 @@ public class RoomState {
     private String playerANickname;
     private String playerBNickname;
 
-    /** 双方当前在线状态(重连恢复依据) */
+    /** 双方当前在线状态(waiting→playing 的双方到齐依据) */
     private boolean onlineA;
     private boolean onlineB;
-    /** 离线起始时间,0 表示在线 */
-    private long offlineSinceA;
-    private long offlineSinceB;
 
     private Cell[] board;
 
-    /** 各自消除对数 */
+    /** 各自累计消除格数(每消 1 格 +1,连锁累加) */
     private int scoreA;
     private int scoreB;
 
@@ -37,9 +34,6 @@ public class RoomState {
     private long startedAt;
     /** playing 结束时间 = startedAt + 对局时长 */
     private long deadline;
-
-    /** 无解时是否已自动洗牌(只允许一次) */
-    private boolean reshuffleUsed;
 
     public boolean isPlayer(Long userId) {
         return userId.equals(playerAId) || userId.equals(playerBId);

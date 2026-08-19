@@ -1,17 +1,14 @@
-// 与后端 BoardGenerator/结算逻辑保持一致的常量
+// 与后端 Match3Engine/结算逻辑保持一致的常量
 
-/** 8 种水果图案,各 4 对(Windows 自带 Emoji 字体全支持) */
-export const TILE_EMOJIS = ['🍎', '🍌', '🍇', '🍓', '🍊', '🍉', '🍒', '🥝']
+/** 6 种水果图案(与后端 Match3Engine.TILE_EMOJIS 一致) */
+export const TILE_EMOJIS = ['🍎', '🍌', '🍇', '🍓', '🍊', '🍉']
 
 export const BOARD_SIZE = 8
 
 /** 对局结束原因 → 中文文案 */
 export const REASON_LABEL: Record<string, string> = {
-  cleared: '棋盘清空',
   timeout: '时间到',
-  no_moves: '无路可走',
-  forfeit: '离线超时判负',
-  both_disconnected: '双方掉线,对局取消',
+  forfeit: '对手离线判负',
   join_timeout: '超时未进入,对局取消',
 }
 
@@ -30,8 +27,8 @@ export const ERROR_MESSAGE: Record<number, string> = {
   40901: '已匹配成功,无法取消',
   40902: '对局已结束',
   40903: '已在对局中',
-  42200: '这两个图案无法连通(转弯不能超过 2 次)',
-  42201: '所选格子已被消除',
+  42200: '只能交换相邻的两个格子',
   42202: '不能选择同一个格子',
+  42204: '该交换无法形成三连消除',
   42205: '对局尚未开始',
 }

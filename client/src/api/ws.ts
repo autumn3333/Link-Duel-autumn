@@ -168,7 +168,7 @@ export function subscribeMatch(handler: (data: MatchFoundData) => void): () => v
   })
 }
 
-/** 对局错误通知(/user/queue/errors,如非法消除) */
+/** 对局错误通知(/user/queue/errors,如非法交换) */
 export function subscribeErrors(handler: (data: ErrorData) => void): () => void {
   return register('/user/queue/errors', (e) => {
     if (e.type === 'error') handler(e.data as ErrorData)
@@ -187,10 +187,10 @@ export function subscribeRoom(roomId: string, handler: (event: GameEvent) => voi
   return register(`/topic/game/${roomId}`, handler)
 }
 
-/** 发送消除请求(roomId 由服务端从 user:game 推导,不可伪造) */
-export function sendMove(cellA: number, cellB: number): void {
+/** 发送交换请求(roomId 由服务端从 user:game 推导,不可伪造) */
+export function sendSwap(from: number, to: number): void {
   client?.publish({
     destination: '/app/game/move',
-    body: JSON.stringify({ cellA, cellB }),
+    body: JSON.stringify({ from, to }),
   })
 }

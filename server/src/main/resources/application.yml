@@ -34,9 +34,7 @@ jwt:
 game:
   # 对局时长(秒)——限时积分制
   duration-seconds: 120
-  # 断线宽限期(秒):超过则判在线方胜 / 双离线取消
-  forfeit-grace-seconds: 90
-  # 对局状态在 Redis 中的保留时间(分钟),覆盖断线重连窗口
+  # 对局状态在 Redis 中的保留时间(分钟)
   room-ttl-minutes: 30
   # 匹配后等待双方进入对局的超时(秒)
   join-timeout-seconds: 60

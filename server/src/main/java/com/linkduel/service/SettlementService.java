@@ -20,7 +20,7 @@ import java.util.HashMap;
 import java.util.Map;
 
 /**
- * 幂等结算。所有结束路径(清空/超时/无解/弃赛/双离线/进入超时)汇入 settleGame:
+ * 幂等结算。所有结束路径(倒计时超时/离线弃赛/进入超时)汇入 settleGame:
  *
  * <pre>
  * 1. Redis SETNX 锁(30s)串行化并发结算;
@@ -37,16 +37,10 @@ public class SettlementService {
 
     /** 结算触发原因 */
     public enum SettleTrigger {
-        /** 棋盘清空 */
-        CLEARED,
         /** 倒计时结束 */
         TIMEOUT,
-        /** 洗牌后仍无解 */
-        NO_MOVES,
-        /** 一方离线超过宽限期 */
+        /** 一方离线(立即判在线方胜) */
         FORFEIT,
-        /** 双方离线超过宽限期 */
-        BOTH_OFFLINE,
         /** 匹配后未在限时内进入对局 */
         JOIN_TIMEOUT
     }
@@ -128,17 +122,11 @@ public class SettlementService {
                     deltaB = 3;
                 }
             }
-            case BOTH_OFFLINE -> {
-                status = "cancelled";
-                reason = "both_disconnected";
-            }
             case JOIN_TIMEOUT -> {
                 status = "cancelled";
                 reason = "join_timeout";
             }
-            case CLEARED -> reason = "cleared";
             case TIMEOUT -> reason = "timeout";
-            case NO_MOVES -> reason = "no_moves";
             default -> reason = "unknown";
         }
         // finished 类结算:按对局内得分定胜负

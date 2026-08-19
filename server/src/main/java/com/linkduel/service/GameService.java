@@ -5,23 +5,24 @@ import com.linkduel.common.ErrorCode;
 import com.linkduel.config.GameProperties;
 import com.linkduel.dto.Cell;
 import com.linkduel.dto.RoomState;
-import com.linkduel.game.BoardGenerator;
-import com.linkduel.game.PathValidator;
+import com.linkduel.game.Match3Engine;
 import com.linkduel.ws.GameEventPublisher;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 
+import java.security.SecureRandom;
 import java.util.HashMap;
-import java.util.List;
 import java.util.Map;
+import java.util.Random;
 
 /**
- * 对局服务:权威校验并执行消除操作。
+ * 对局服务:权威校验并执行一次"交换三消"操作。
  *
- * <p>客户端传来的只有两个格子坐标;是否合法完全由服务端根据 Redis 中的
- * 棋盘状态判定(玩家/房间/坐标/重复操作/超时全部校验),得分也只在此累加。
+ * <p>客户端只传来两个相邻格子坐标;是否合法完全由服务端根据 Redis 中的
+ * 棋盘状态判定(玩家/房间/相邻/能成三连/超时全部校验),得分也只在此累加:
+ * 每消除 1 格 +1 记给操作者,连锁消除累加。死局自动洗牌直到有解。
  */
 @Slf4j
 @Service
@@ -35,21 +36,24 @@ public class GameService {
     private final GameEventPublisher eventPublisher;
     private final GameProperties gameProperties;
 
+    /** 补块/洗牌的随机源(无状态,不注入容器) */
+    private final Random random = new SecureRandom();
+
     /**
-     * 执行一次消除尝试。
+     * 执行一次交换尝试。
      *
      * @throws BizException 非法操作(由 STOMP 层转为 /user/queue/errors 通知)
      */
-    public void move(Long userId, int cellA, int cellB) {
+    public void move(Long userId, int from, int to) {
         String roomId = redis.opsForValue().get(RedisKeys.userGame(userId));
         if (roomId == null) {
             throw new BizException(ErrorCode.NOT_IN_GAME);
         }
         // 房间锁串行化同一房间的并发操作(move vs move / move vs settle)
-        roomLocks.withLock(roomId, () -> doMove(roomId, userId, cellA, cellB));
+        roomLocks.withLock(roomId, () -> doMove(roomId, userId, from, to));
     }
 
-    private void doMove(String roomId, Long userId, int cellA, int cellB) {
+    private void doMove(String roomId, Long userId, int from, int to) {
         RoomState room = matchmakingService.loadRoom(roomId);
         if (room == null || room.isSettled()) {
             throw new BizException(ErrorCode.GAME_OVER);
@@ -70,76 +74,55 @@ public class GameService {
 
         Cell[] board = room.getBoard();
         int size = gameProperties.getBoardSize();
-        if (cellA < 0 || cellB < 0 || cellA >= board.length || cellB >= board.length) {
+        if (from < 0 || to < 0 || from >= board.length || to >= board.length) {
             throw new BizException(ErrorCode.PARAM_ERROR, "坐标超出棋盘范围");
         }
-        if (cellA == cellB) {
+        if (from == to) {
             throw new BizException(ErrorCode.SAME_CELL);
         }
-        if (board[cellA].isEliminated() || board[cellB].isEliminated()) {
-            throw new BizException(ErrorCode.CELL_ELIMINATED);
-        }
-        List<Integer> path = PathValidator.findPath(board, size, cellA, cellB);
-        if (path == null) {
-            throw new BizException(ErrorCode.INVALID_PATH);
+        if (!Match3Engine.isAdjacent(size, from, to)) {
+            throw new BizException(ErrorCode.NOT_ADJACENT);
         }
 
-        // 权威状态变更:消除两格、得分 +1、持久化
-        String emoji = board[cellA].getEmoji();
-        board[cellA].setEliminated(true);
-        board[cellB].setEliminated(true);
+        // 引擎就地结算:非法交换返回 null(棋盘已还原);合法则返回各连锁步
+        Match3Engine.MoveResult result = Match3Engine.resolveSwap(board, size, from, to, random);
+        if (result == null) {
+            throw new BizException(ErrorCode.INVALID_SWAP);
+        }
+
+        // 计分:每消除 1 格 +1 记给操作者(连锁累加),权威持久化
+        int gained = result.getScoreGained();
         if (userId.equals(room.getPlayerAId())) {
-            room.setScoreA(room.getScoreA() + 1);
+            room.setScoreA(room.getScoreA() + gained);
         } else {
-            room.setScoreB(room.getScoreB() + 1);
+            room.setScoreB(room.getScoreB() + gained);
         }
         matchmakingService.saveRoom(room);
 
-        // 实时广播:双方客户端都据此播放动画、更新比分(含消除者自己)
-        Map<String, Object> data = new HashMap<>();
-        data.put("byUserId", userId);
-        data.put("cellA", cellA);
-        data.put("cellB", cellB);
-        data.put("emoji", emoji);
-        data.put("path", path);
-        data.put("scoreA", room.getScoreA());
-        data.put("scoreB", room.getScoreB());
-        eventPublisher.toRoom(roomId, "eliminated", data);
-
-        // 终局检查
-        if (isAllEliminated(board)) {
-            settlementService.settleGame(roomId, SettlementService.SettleTrigger.CLEARED);
-            return;
+        // 实时广播(含操作者):先交换动画,再逐连锁步回放消除+补块后的棋盘
+        eventPublisher.toRoom(roomId, "moved", Map.of(
+                "byUserId", userId, "from", from, "to", to,
+                "scoreA", room.getScoreA(), "scoreB", room.getScoreB()));
+        for (Match3Engine.Step step : result.getSteps()) {
+            Map<String, Object> data = new HashMap<>();
+            data.put("byUserId", userId);
+            data.put("cells", step.getCells());
+            data.put("board", step.getBoard());
+            data.put("scoreA", room.getScoreA());
+            data.put("scoreB", room.getScoreB());
+            eventPublisher.toRoom(roomId, "cleared", data);
         }
-        if (!BoardGenerator.hasLegalMove(board, size)) {
-            handleNoMoves(roomId, room, board, size);
-        }
-    }
 
-    /** 棋盘剩余图案但无可消除对:允许自动洗牌一次,之后仍无解则按分结算 */
-    private void handleNoMoves(String roomId, RoomState room, Cell[] board, int size) {
-        if (!room.isReshuffleUsed()) {
-            room.setReshuffleUsed(true);
-            boolean solvable = BoardGenerator.reshuffleRemaining(
-                    board, size, gameProperties.getMaxReshuffleTries());
+        // 死局(无任何可行交换)→ 自动洗牌直到有解,不限次数
+        if (!Match3Engine.hasValidSwap(board, size)) {
+            boolean solvable = Match3Engine.reshuffle(
+                    board, size, random, gameProperties.getMaxReshuffleTries());
             matchmakingService.saveRoom(room);
             if (solvable) {
                 Map<String, Object> data = new HashMap<>();
                 data.put("board", board);
-                data.put("reason", "no_moves");
                 eventPublisher.toRoom(roomId, "reshuffled", data);
-                return;
             }
         }
-        settlementService.settleGame(roomId, SettlementService.SettleTrigger.NO_MOVES);
-    }
-
-    private boolean isAllEliminated(Cell[] board) {
-        for (Cell cell : board) {
-            if (!cell.isEliminated()) {
-                return false;
-            }
-        }
-        return true;
     }
 }

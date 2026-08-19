@@ -22,10 +22,10 @@ public enum ErrorCode {
     ALREADY_MATCHED(40901, "已在匹配中,无法取消"),
     ALREADY_IN_GAME(40903, "已在对局中"),
     GAME_OVER(40902, "对局已结束"),
-    INVALID_PATH(42200, "所选两个图案无法连通"),
-    CELL_ELIMINATED(42201, "所选格子已被消除"),
+    NOT_ADJACENT(42200, "只能交换相邻的两个格子"),
     SAME_CELL(42202, "不能选择同一个格子"),
     NOT_YOUR_ROOM(42203, "不属于该对局"),
+    INVALID_SWAP(42204, "该交换无法形成三连消除"),
     INTERNAL_ERROR(50000, "服务器内部错误");
 
     private final int code;

@@ -19,7 +19,7 @@ import java.util.Map;
  * 对局相关 STOMP 消息入口(app 前缀由 WebSocketConfig 配置)。
  * <ul>
  *   <li>/app/heartbeat:心跳,刷新在线 TTL,回 serverNow 供客户端计算时钟偏移;</li>
- *   <li>/app/game/move:消除请求,权威校验在 GameService,失败通过 /user/queue/errors 回错误码。</li>
+ *   <li>/app/game/move:交换请求,权威校验在 GameService,失败通过 /user/queue/errors 回错误码。</li>
  * </ul>
  */
 @Slf4j
@@ -53,7 +53,7 @@ public class GameEventController {
             return;
         }
         try {
-            gameService.move(userId, request.getCellA(), request.getCellB());
+            gameService.move(userId, request.getFrom(), request.getTo());
         } catch (BizException e) {
             sendError(userId, e.getErrorCode());
         } catch (Exception e) {

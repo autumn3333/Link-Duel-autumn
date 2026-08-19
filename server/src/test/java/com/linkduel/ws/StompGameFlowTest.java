@@ -7,8 +7,9 @@ import com.linkduel.common.ErrorCode;
 import com.linkduel.dto.Cell;
 import com.linkduel.dto.RoomState;
 import com.linkduel.entity.GameRecord;
-import com.linkduel.game.PathValidator;
+import com.linkduel.game.Match3Engine;
 import com.linkduel.mapper.GameRecordMapper;
+import com.linkduel.mapper.UserMapper;
 import com.linkduel.service.MatchmakingService;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
@@ -34,12 +35,12 @@ import org.springframework.web.socket.messaging.WebSocketStompClient;
 import java.lang.reflect.Type;
 import java.util.List;
 import java.util.Map;
+import java.util.Random;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -47,8 +48,9 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /**
  * STOMP 全流程集成测试(WebSocketStompClient 真实建连):
  * 登录 → 建连 → 匹配(match-found 事件)→ 订阅房间(快照,waiting→playing)
- * → 消除(双方实时收到 eliminated + 路径)→ 倒计时到期结算(gameover 广播 + GAME_OVER 错误)
- * → 结算落库 → Redis 清理。
+ * → 交换三消(双方实时收到 moved + cleared 连锁)→ 倒计时到期结算
+ * (gameover 广播 + GAME_OVER 错误)→ 结算落库 → Redis 清理;
+ * 另有对手断线 → 立即 FORFEIT 结算的用例。
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
 @TestPropertySource(properties = "spring.data.redis.database=15")
@@ -68,6 +70,9 @@ class StompGameFlowTest extends IntegrationTestSupport {
 
     @Autowired
     private GameRecordMapper gameRecordMapper;
+
+    @Autowired
+    private UserMapper userMapper;
 
     @Autowired
     private GameEventPublisher eventPublisher;
@@ -153,16 +158,38 @@ class StompGameFlowTest extends IntegrationTestSupport {
                 }).get(5, TimeUnit.SECONDS);
     }
 
-    /** 用服务端同款算法找第一个合法消除对(保证测试必然命中) */
-    private int[] findLegalMove(Cell[] board) {
+    private static Cell[] copyBoard(Cell[] src) {
+        Cell[] out = new Cell[src.length];
+        for (int i = 0; i < src.length; i++) {
+            out[i] = new Cell(src[i].getId(), src[i].getEmoji());
+        }
+        return out;
+    }
+
+    /** 用服务端同款引擎找第一个合法交换(保证测试必然命中) */
+    private static int[] findValidSwap(Cell[] board) {
         for (int i = 0; i < board.length; i++) {
-            for (int j = i + 1; j < board.length; j++) {
-                if (PathValidator.findPath(board, 8, i, j) != null) {
-                    return new int[]{i, j};
-                }
+            int r = i / 8;
+            int c = i % 8;
+            if (c + 1 < 8 && Match3Engine.resolveSwap(
+                    copyBoard(board), 8, i, i + 1, new Random(1)) != null) {
+                return new int[]{i, i + 1};
+            }
+            if (r + 1 < 8 && Match3Engine.resolveSwap(
+                    copyBoard(board), 8, i, i + 8, new Random(1)) != null) {
+                return new int[]{i, i + 8};
             }
         }
         return null;
+    }
+
+    /** 排空一个 topic 队列里剩余的 cleared/reshuffled 连锁消息(步数不固定) */
+    private static void drainCascade(QueueHandler topic) throws InterruptedException {
+        Map<String, Object> next;
+        while ((next = topic.pollOrNull(1)) != null
+                && ("cleared".equals(next.get("type")) || "reshuffled".equals(next.get("type")))) {
+            // 继续排空
+        }
     }
 
     @SuppressWarnings("unchecked")
@@ -210,6 +237,8 @@ class StompGameFlowTest extends IntegrationTestSupport {
     void fullMatchFlowOverStomp() throws Exception {
         String tokenA = login("player_a@example.com");
         String tokenB = login("player_b@example.com");
+        Long aId = jdbc.queryForObject(
+                "SELECT id FROM users WHERE email='player_a@example.com'", Long.class);
 
         QueueHandler aMatch = new QueueHandler(), bMatch = new QueueHandler();
         QueueHandler aSnap = new QueueHandler(), bSnap = new QueueHandler();
@@ -247,55 +276,126 @@ class StompGameFlowTest extends IntegrationTestSupport {
         sessionA.subscribe("/topic/game/" + roomId, aTopic);
         sessionB.subscribe("/topic/game/" + roomId, bTopic);
         // 同上:等待双方的房间订阅在服务端注册就绪,确保 A 发 move 前
-        // 双方的 eliminated 订阅均已生效
+        // 双方的房间订阅均已生效
         Thread.sleep(500);
         Map<String, Object> snapA = aSnap.poll(5);
         assertEquals("snapshot", snapA.get("type"));
         Map<String, Object> snapData = (Map<String, Object>) snapA.get("data");
         assertEquals("playing", snapData.get("status"));
 
+        // A 订阅房间时双方在线标志已满足(waiting → playing),started 广播先于对局事件
+        Map<String, Object> started = aTopic.poll(5);
+        assertEquals("started", started.get("type"));
+
         Cell[] board = objectMapper.convertValue(snapData.get("board"), Cell[].class);
-        int[] move = findLegalMove(board);
-        assertNotNull(move, "生成的棋盘应至少有一个可消除对");
+        int[] swap = findValidSwap(board);
+        assertNotNull(swap, "生成的棋盘应至少有一个可行交换");
 
-        // A 发消除 → 双方实时收到 eliminated(消除者自己也收到,用于播动画)
-        sessionA.send("/app/game/move", Map.of("cellA", move[0], "cellB", move[1]));
-        Map<String, Object> elimA = aTopic.poll(5);
-        assertEquals("eliminated", elimA.get("type"));
-        Map<String, Object> elimB = bTopic.poll(5);
-        assertEquals("eliminated", elimB.get("type"));
-        Map<String, Object> elimData = (Map<String, Object>) elimB.get("data");
-        assertEquals(move[0], elimData.get("cellA"));
-        assertEquals(move[1], elimData.get("cellB"));
-        assertFalse(((List<?>) elimData.get("path")).isEmpty());
-        assertEquals(1, elimData.get("scoreA"));
+        // A 发交换 → 双方实时收到 moved(交换)+ cleared(每连锁步一条,含操作者)
+        sessionA.send("/app/game/move", Map.of("from", swap[0], "to", swap[1]));
 
-        // 强制倒计时到期:B 再消除 → 先广播 gameover,再收到 GAME_OVER 错误
+        Map<String, Object> movedA = aTopic.poll(5);
+        assertEquals("moved", movedA.get("type"));
+        Map<String, Object> movedData = (Map<String, Object>) movedA.get("data");
+        assertEquals(swap[0], movedData.get("from"));
+        assertEquals(swap[1], movedData.get("to"));
+        assertEquals(aId.longValue(), ((Number) movedData.get("byUserId")).longValue());
+        int scoreA = ((Number) movedData.get("scoreA")).intValue();
+        assertTrue(scoreA >= 3, "一次合法交换至少消除 3 格");
+
+        Map<String, Object> clearA = aTopic.poll(5);
+        assertEquals("cleared", clearA.get("type"));
+        Map<String, Object> clearData = (Map<String, Object>) clearA.get("data");
+        assertTrue(!((List<?>) clearData.get("cells")).isEmpty());
+        List<Cell> clearedBoard = objectMapper.convertValue(
+                clearData.get("board"),
+                objectMapper.getTypeFactory().constructCollectionType(List.class, Cell.class));
+        assertEquals(64, clearedBoard.size());
+        assertEquals(scoreA, ((Number) clearData.get("scoreA")).intValue());
+
+        // 双方对称:B 也收到 moved + cleared(消除者自己也收到,用于播动画)
+        assertEquals("moved", bTopic.poll(5).get("type"));
+        assertEquals("cleared", bTopic.poll(5).get("type"));
+        drainCascade(aTopic);
+        drainCascade(bTopic);
+
+        // 强制倒计时到期:B 再操作 → 先广播 gameover,再收到 GAME_OVER 错误
         RoomState room = matchmakingService.loadRoom(roomId);
         room.setDeadline(System.currentTimeMillis() - 1);
         matchmakingService.saveRoom(room);
-        board[move[0]].setEliminated(true);
-        board[move[1]].setEliminated(true);
-        int[] move2 = findLegalMove(board);
-        assertNotNull(move2);
-        sessionB.send("/app/game/move", Map.of("cellA", move2[0], "cellB", move2[1]));
+        sessionB.send("/app/game/move", Map.of("from", 0, "to", 1));
 
         Map<String, Object> gameOver = aTopic.poll(5);
         assertEquals("gameover", gameOver.get("type"));
         assertEquals("timeout", ((Map<String, Object>) gameOver.get("data")).get("reason"));
+        assertEquals("gameover", bTopic.poll(5).get("type"));
 
         Map<String, Object> err = bErr.poll(5);
         assertEquals("error", err.get("type"));
         assertEquals(40902, ((Map<String, Object>) err.get("data")).get("code")); // GAME_OVER
 
-        // 结算落库:1:0 超时,A 胜
+        // 结算落库:X:0 超时,A 胜
         GameRecord rec = gameRecordMapper.findByGameId(roomId);
         assertNotNull(rec);
         assertEquals("timeout", rec.getReason());
-        assertEquals(1, rec.getScoreA());
+        assertEquals(aId, rec.getWinnerId());
+        assertEquals(scoreA, rec.getScoreA());
         assertEquals(0, rec.getScoreB());
 
         // 房间相关 Redis key 已清理
+        assertNull(matchmakingService.loadRoom(roomId));
+    }
+
+    @SuppressWarnings("unchecked")
+    @Test
+    void opponentDisconnectSettlesForfeitImmediately() throws Exception {
+        String tokenA = login("player_a@example.com");
+        String tokenB = login("player_b@example.com");
+        Long aId = jdbc.queryForObject(
+                "SELECT id FROM users WHERE email='player_a@example.com'", Long.class);
+
+        QueueHandler aMatch = new QueueHandler(), bMatch = new QueueHandler();
+        QueueHandler aSnap = new QueueHandler();
+        QueueHandler aTopic = new QueueHandler();
+
+        sessionA = connect(tokenA);
+        sessionB = connect(tokenB);
+        sessionA.subscribe("/user/queue/match", aMatch);
+        sessionB.subscribe("/user/queue/match", bMatch);
+        sessionA.subscribe("/user/queue/snapshot", aSnap);
+        Thread.sleep(500);
+
+        JsonNode joinA = apiPost(tokenA, "/api/match/join", Map.of());
+        assertEquals("queued", joinA.path("data").path("status").asText());
+        JsonNode joinB = apiPost(tokenB, "/api/match/join", Map.of());
+        String roomId = joinB.path("data").path("roomId").asText();
+        assertEquals("matched", joinB.path("data").path("status").asText());
+
+        aMatch.poll(5); // match-found
+
+        // 只有 A 订阅房间:B 保持"匹配成功后尚未进入对局页"的状态(playing 已可开始)
+        sessionA.subscribe("/topic/game/" + roomId, aTopic);
+        Thread.sleep(500);
+        Map<String, Object> snapA = aSnap.poll(5);
+        assertEquals("playing", ((Map<String, Object>) snapA.get("data")).get("status"));
+        Map<String, Object> started = aTopic.poll(5);
+        assertEquals("started", started.get("type"));
+
+        // B 断线 → 立即 FORFEIT 结算:在线方 A 胜 +3,gameover 广播到房间
+        sessionB.disconnect();
+        sessionB = null;
+
+        Map<String, Object> gameOver = aTopic.poll(5);
+        assertEquals("gameover", gameOver.get("type"));
+        Map<String, Object> data = (Map<String, Object>) gameOver.get("data");
+        assertEquals("forfeit", data.get("reason"));
+        assertEquals(aId.longValue(), ((Number) data.get("winnerId")).longValue());
+
+        GameRecord rec = gameRecordMapper.findByGameId(roomId);
+        assertNotNull(rec);
+        assertEquals("forfeit", rec.getStatus());
+        assertEquals(aId, rec.getWinnerId());
+        assertEquals(3, userMapper.findById(aId).getPoints());
         assertNull(matchmakingService.loadRoom(roomId));
     }
 }

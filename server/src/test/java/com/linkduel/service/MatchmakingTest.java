@@ -3,23 +3,20 @@ package com.linkduel.service;
 import com.linkduel.IntegrationTestSupport;
 import com.linkduel.common.BizException;
 import com.linkduel.common.ErrorCode;
-import com.linkduel.dto.Cell;
 import com.linkduel.dto.JoinResult;
 import com.linkduel.dto.RoomState;
 import com.linkduel.entity.User;
+import com.linkduel.game.Match3Engine;
 import com.linkduel.mapper.UserMapper;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.test.context.TestPropertySource;
 
-import java.util.Arrays;
-import java.util.Map;
-import java.util.stream.Collectors;
-
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * 匹配队列集成测试:入队/重复入队/取消/配对成房(依赖真实 Redis 的 Lua 脚本)。
@@ -73,17 +70,15 @@ class MatchmakingTest extends IntegrationTestSupport {
         assertEquals(roomId, redis.opsForValue().get(RedisKeys.userGame(playerB().getId())));
         assertNotNull(redis.opsForZSet().score(RedisKeys.GAMES_ACTIVE, roomId));
 
-        // 房间状态:初始棋盘 64 格全存活(8 种图案各 4 对 = 32 对),双方拿到的是同一个房间
+        // 房间状态:初始棋盘 64 格全满、无三连、且至少存在一个可行交换,双方拿到的是同一个房间
         RoomState room = matchmakingService.loadRoom(roomId);
         assertNotNull(room);
         assertEquals("waiting", room.getStatus());
         assertEquals(64, room.getBoard().length);
-        long alive = Arrays.stream(room.getBoard()).filter(c -> !c.isEliminated()).count();
-        assertEquals(64, alive);
-        Map<String, Long> counts = Arrays.stream(room.getBoard())
-                .collect(Collectors.groupingBy(Cell::getEmoji, Collectors.counting()));
-        assertEquals(8, counts.size());
-        counts.values().forEach(n -> assertEquals(8L, n));
+        assertTrue(Match3Engine.findMatches(room.getBoard(), 8).isEmpty(),
+                "初始棋盘不应存在三连");
+        assertTrue(Match3Engine.hasValidSwap(room.getBoard(), 8),
+                "初始棋盘必须存在可行交换");
 
         // 已在对局中,不能再匹配
         BizException ex = assertThrows(BizException.class, () -> matchmakingService.join(playerA()));

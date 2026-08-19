@@ -15,9 +15,6 @@ public class GameProperties {
     /** 对局时长(秒),限时积分制 */
     private int durationSeconds = 120;
 
-    /** 断线宽限期(秒):超过则判在线方胜 / 双离线取消 */
-    private int forfeitGraceSeconds = 90;
-
     /** 对局状态在 Redis 的 TTL(分钟) */
     private int roomTtlMinutes = 30;
 

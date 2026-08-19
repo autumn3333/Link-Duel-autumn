@@ -1,19 +1,22 @@
 <script setup lang="ts">
-import { computed } from 'vue'
-import type { CellState } from '@/types/game'
+import { computed, onUnmounted, ref } from 'vue'
+import type { Tile } from '@/types/game'
 
 /**
- * 8×8 棋盘 + 消除路径动画层。
- * 布局参数在此统一维护,SVG 折线沿"服务端返回的实际路径"的格子中心绘制。
+ * 8×8 方形棋盘(三消玩法)。
+ * 方块以 Tile.key 为稳定身份,TransitionGroup FLIP 负责:
+ * 交换/下落 = 同 key 换位置的移动动画,补块 = 新 key 从顶部入场,消除 = dying 消失动画。
+ * 交互:按下拖到相邻格松开即交换;原地松开 = 点选(点选两个相邻格也交换)。
  */
-const props = defineProps<{
-  board: CellState[]
+defineProps<{
+  tiles: Tile[]
   selected: number[]
-  /** 正在播放的消除动画(来自服务端 eliminated 事件) */
-  elimination: { path: number[]; emoji: string } | null
 }>()
 
-const emit = defineEmits<{ (e: 'cell-click', id: number): void }>()
+const emit = defineEmits<{
+  (e: 'cell-click', id: number): void
+  (e: 'swap', from: number, to: number): void
+}>()
 
 const SIZE = 8
 const CELL = 60
@@ -25,55 +28,70 @@ const boardHeight = boardWidth
 
 const gridStyle = computed(() => ({
   gridTemplateColumns: `repeat(${SIZE}, ${CELL}px)`,
+  // 行高与列宽一致,保证格子是正方形
+  gridAutoRows: `${CELL}px`,
   gap: `${GAP}px`,
   padding: `${PAD}px`,
 }))
 
-function center(id: number): { x: number; y: number } {
-  const row = Math.floor(id / SIZE)
-  const col = id % SIZE
-  return {
-    x: PAD + col * (CELL + GAP) + CELL / 2,
-    y: PAD + row * (CELL + GAP) + CELL / 2,
+function isAdjacent(a: number, b: number): boolean {
+  return (
+    Math.abs(Math.floor(a / SIZE) - Math.floor(b / SIZE)) +
+      Math.abs((a % SIZE) - (b % SIZE)) ===
+    1
+  )
+}
+
+// ---- 拖动交换(按下 → 划到相邻格 → 松开;原地松开 = 点选) ----
+const dragFrom = ref<number | null>(null)
+const dragOver = ref<number | null>(null)
+
+function onPointerDown(id: number) {
+  dragFrom.value = id
+  dragOver.value = null
+  window.addEventListener('pointerup', onWindowPointerUp)
+}
+
+function onWindowPointerUp() {
+  window.removeEventListener('pointerup', onWindowPointerUp)
+  const from = dragFrom.value
+  const to = dragOver.value
+  dragFrom.value = null
+  dragOver.value = null
+  if (from == null) return
+  if (to != null && to !== from && isAdjacent(from, to)) {
+    emit('swap', from, to)
+  } else if (to == null) {
+    emit('cell-click', from)
   }
 }
 
-const linePoints = computed(() =>
-  (props.elimination?.path ?? [])
-    .map((id) => {
-      const p = center(id)
-      return `${p.x},${p.y}`
-    })
-    .join(' '),
-)
-
-function cellClass(cell: CellState, id: number) {
-  const path = props.elimination?.path
-  return {
-    dead: cell.eliminated,
-    selected: props.selected.includes(id),
-    dying: path != null && (path[0] === id || path[path.length - 1] === id),
-  }
+function onPointerEnter(id: number) {
+  if (dragFrom.value == null) return
+  dragOver.value = isAdjacent(dragFrom.value, id) ? id : null
 }
+
+onUnmounted(() => window.removeEventListener('pointerup', onWindowPointerUp))
 </script>
 
 <template>
   <div class="board" :style="{ width: `${boardWidth}px`, height: `${boardHeight}px` }">
-    <div class="grid" :style="gridStyle">
+    <TransitionGroup tag="div" name="cell" class="grid" :style="gridStyle">
       <button
-        v-for="cell in board"
-        :key="cell.id"
+        v-for="tile in tiles"
+        :key="tile.key"
         class="cell"
-        :class="cellClass(cell, cell.id)"
-        :disabled="cell.eliminated"
-        @click="emit('cell-click', cell.id)"
+        :class="{
+          selected: selected.includes(tile.id),
+          dying: tile.dying,
+          dragover: dragOver === tile.id,
+        }"
+        @pointerdown="onPointerDown(tile.id)"
+        @pointerenter="onPointerEnter(tile.id)"
       >
-        {{ cell.emoji }}
+        {{ tile.emoji }}
       </button>
-    </div>
-    <svg v-if="elimination" class="overlay" :width="boardWidth" :height="boardHeight">
-      <polyline :points="linePoints" class="line" />
-    </svg>
+    </TransitionGroup>
   </div>
 </template>
 
@@ -96,27 +114,21 @@ function cellClass(cell: CellState, id: number) {
   font-size: 32px;
   line-height: 1;
   cursor: pointer;
-  transition:
-    transform 0.1s,
-    box-shadow 0.1s,
-    background 0.1s;
-}
-
-.cell:hover:not(:disabled) {
-  transform: scale(1.06);
+  user-select: none;
+  touch-action: none; /* 移动端拖拽不触发页面滚动 */
 }
 
 .cell.selected {
   box-shadow: 0 0 0 3px #fbbf24 inset;
+}
+
+.cell.dragover {
+  box-shadow: 0 0 0 3px #93c5fd inset;
   transform: scale(1.05);
 }
 
-.cell.dead {
-  visibility: hidden;
-}
-
 .cell.dying {
-  animation: die 0.6s ease forwards;
+  animation: die 0.25s ease forwards;
 }
 
 @keyframes die {
@@ -126,26 +138,25 @@ function cellClass(cell: CellState, id: number) {
   }
 }
 
-.overlay {
-  position: absolute;
-  inset: 0;
-  pointer-events: none;
+/* TransitionGroup:交换/下落的 FLIP 移动动画 */
+.cell-move {
+  transition: transform 0.3s ease;
 }
 
-.line {
-  fill: none;
-  stroke: #ff6b6b;
-  stroke-width: 4;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-  stroke-dasharray: 1000;
-  stroke-dashoffset: 1000;
-  animation: draw 0.6s linear forwards;
+/* 补块:从上方落入 */
+.cell-enter-active {
+  transition:
+    opacity 0.25s ease,
+    transform 0.3s ease;
 }
 
-@keyframes draw {
-  to {
-    stroke-dashoffset: 0;
-  }
+.cell-enter-from {
+  opacity: 0;
+  transform: translateY(-72px) scale(0.6);
+}
+
+/* 消除方块已在 dying 动画中播放完毕,离场无需再过渡 */
+.cell-leave-active {
+  transition: none;
 }
 </style>

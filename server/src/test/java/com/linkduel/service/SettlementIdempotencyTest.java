@@ -158,7 +158,7 @@ class SettlementIdempotencyTest extends IntegrationTestSupport {
     }
 
     @Test
-    void sweeperForfeitsWhenPlayerOfflineBeyondGrace() {
+    void forfeitSettlesImmediatelyWhenPlayerOffline() {
         User g = createUser("forfeit_g_" + System.nanoTime() + "@test.com");
         User h = createUser("forfeit_h_" + System.nanoTime() + "@test.com");
         String roomId = matchTwoUsers(g, h);
@@ -168,12 +168,11 @@ class SettlementIdempotencyTest extends IntegrationTestSupport {
         room.setStatus("playing");
         room.setStartedAt(now - 10_000);
         room.setDeadline(now + 60_000);
+        // B 掉线:WebSocketEventListener 先标记离线,再立即触发 FORFEIT 结算(不再有宽限)
         room.setOnlineB(false);
-        room.setOfflineSinceB(now - 91_000); // 离线已超过 90 秒宽限
         matchmakingService.saveRoom(room);
-        redis.opsForZSet().add(RedisKeys.GAMES_ACTIVE, roomId, now + 60_000);
 
-        gameSweeper.sweep();
+        settlementService.settleGame(roomId, SettlementService.SettleTrigger.FORFEIT);
 
         GameRecord rec = gameRecordMapper.findByGameId(roomId);
         assertNotNull(rec);
@@ -181,5 +180,6 @@ class SettlementIdempotencyTest extends IntegrationTestSupport {
         assertEquals(g.getId(), rec.getWinnerId()); // 在线方胜
         assertEquals(3, userMapper.findById(g.getId()).getPoints());
         assertEquals(0, userMapper.findById(h.getId()).getPoints());
+        assertNull(matchmakingService.loadRoom(roomId));
     }
 }

@@ -9,7 +9,7 @@ import com.linkduel.dto.JoinResult;
 import com.linkduel.dto.RoomState;
 import com.linkduel.dto.UserVO;
 import com.linkduel.entity.User;
-import com.linkduel.game.BoardGenerator;
+import com.linkduel.game.Match3Engine;
 import com.linkduel.mapper.UserMapper;
 import com.linkduel.ws.GameEventPublisher;
 import lombok.RequiredArgsConstructor;
@@ -108,7 +108,7 @@ public class MatchmakingService {
         String roomId = "r-" + randomHex(6);
         long now = System.currentTimeMillis();
         int size = gameProperties.getBoardSize();
-        Cell[] board = BoardGenerator.generate(size, gameProperties.getMaxReshuffleTries());
+        Cell[] board = Match3Engine.generate(size, gameProperties.getMaxReshuffleTries(), RANDOM);
 
         RoomState room = new RoomState();
         room.setRoomId(roomId);
@@ -123,7 +123,6 @@ public class MatchmakingService {
         room.setScoreA(0);
         room.setScoreB(0);
         room.setCreatedAt(now);
-        room.setReshuffleUsed(false);
         saveRoom(room);
 
         Duration ttl = Duration.ofMinutes(gameProperties.getRoomTtlMinutes());

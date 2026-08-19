@@ -17,9 +17,9 @@ import java.util.Set;
  * 定时扫描活跃对局(games:active 登记于 Redis,进程重启后依然有效):
  * <ul>
  *   <li>waiting 超时(双方未按时进入)→ 取消结算;</li>
- *   <li>playing 倒计时到期 → 按分结算;</li>
- *   <li>一方离线超过宽限期 → 判在线方胜;双方离线 → 取消。</li>
+ *   <li>playing 倒计时到期 → 按分结算。</li>
  * </ul>
+ * 离线立即结算由 WebSocketEventListener 的断线事件触发,不在扫描范围内。
  * 结算本身幂等(Redis 锁 + 唯一键),重复扫描不会重复结算。
  */
 @Slf4j
@@ -54,33 +54,12 @@ public class GameSweeper {
                     }
                     continue;
                 }
-                if (room.isPlaying()) {
-                    if (now >= room.getDeadline()) {
-                        settlementService.settleGame(roomId, SettlementService.SettleTrigger.TIMEOUT);
-                        continue;
-                    }
-                    checkForfeit(roomId, room, now);
+                if (room.isPlaying() && now >= room.getDeadline()) {
+                    settlementService.settleGame(roomId, SettlementService.SettleTrigger.TIMEOUT);
                 }
             } catch (Exception e) {
                 log.error("扫描对局异常 roomId={}", roomId, e);
             }
-        }
-    }
-
-    private void checkForfeit(String roomId, RoomState room, long now) {
-        long graceMillis = gameProperties.getForfeitGraceSeconds() * 1000L;
-        boolean aOffline = !room.isOnlineA()
-                && room.getOfflineSinceA() > 0
-                && now - room.getOfflineSinceA() >= graceMillis;
-        boolean bOffline = !room.isOnlineB()
-                && room.getOfflineSinceB() > 0
-                && now - room.getOfflineSinceB() >= graceMillis;
-        if (aOffline && bOffline) {
-            settlementService.settleGame(roomId, SettlementService.SettleTrigger.BOTH_OFFLINE);
-        } else if (aOffline) {
-            settlementService.settleGame(roomId, SettlementService.SettleTrigger.FORFEIT);
-        } else if (bOffline) {
-            settlementService.settleGame(roomId, SettlementService.SettleTrigger.FORFEIT);
         }
     }
 }
