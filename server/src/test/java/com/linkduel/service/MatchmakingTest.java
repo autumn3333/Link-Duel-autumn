@@ -73,17 +73,17 @@ class MatchmakingTest extends IntegrationTestSupport {
         assertEquals(roomId, redis.opsForValue().get(RedisKeys.userGame(playerB().getId())));
         assertNotNull(redis.opsForZSet().score(RedisKeys.GAMES_ACTIVE, roomId));
 
-        // 房间状态:64 格棋盘,8 种图案各 4 对,双方拿到的是同一个房间
+        // 房间状态:初始棋盘 64 格全存活(8 种图案各 4 对 = 32 对),双方拿到的是同一个房间
         RoomState room = matchmakingService.loadRoom(roomId);
         assertNotNull(room);
         assertEquals("waiting", room.getStatus());
         assertEquals(64, room.getBoard().length);
         long alive = Arrays.stream(room.getBoard()).filter(c -> !c.isEliminated()).count();
-        assertEquals(32, alive);
+        assertEquals(64, alive);
         Map<String, Long> counts = Arrays.stream(room.getBoard())
                 .collect(Collectors.groupingBy(Cell::getEmoji, Collectors.counting()));
         assertEquals(8, counts.size());
-        counts.values().forEach(n -> assertEquals(4L, n));
+        counts.values().forEach(n -> assertEquals(8L, n));
 
         // 已在对局中,不能再匹配
         BizException ex = assertThrows(BizException.class, () -> matchmakingService.join(playerA()));

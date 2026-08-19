@@ -59,7 +59,7 @@ public class AuthChannelInterceptor implements ChannelInterceptor {
         if (StompCommand.CONNECT.equals(accessor.getCommand())) {
             handleConnect(accessor);
         } else if (StompCommand.SUBSCRIBE.equals(accessor.getCommand())) {
-            handleSubscribe(accessor);
+            return handleSubscribe(accessor) ? message : null;
         }
         return message;
     }
@@ -87,25 +87,41 @@ public class AuthChannelInterceptor implements ChannelInterceptor {
         }
     }
 
-    private void handleSubscribe(StompHeaderAccessor accessor) {
+    /**
+     * 返回 false 表示丢弃该 SUBSCRIBE 帧。
+     * 注意:校验失败绝不能抛异常——inbound 通道的异常会一路穿透到
+     * StompSubProtocolHandler,导致整个 WebSocket 连接被关闭(而非只拒绝本次订阅),
+     * 客户端只是订阅了一个不存在/不属于自己的房间就会被迫断线重连。
+     * 正确做法:丢弃该帧 + 向 /user/queue/errors 回错误码,连接保持。
+     */
+    private boolean handleSubscribe(StompHeaderAccessor accessor) {
         Long userId = (Long) accessor.getSessionAttributes().get("userId");
         if (userId == null) {
             throw new BizException(ErrorCode.UNAUTHORIZED);
         }
         String destination = accessor.getDestination();
         if (destination == null || !destination.startsWith("/topic/game/")) {
-            return;
+            return true;
         }
         String roomId = destination.substring("/topic/game/".length());
         RoomState room = matchmakingService.loadRoom(roomId);
         if (room == null || room.isSettled()) {
-            throw new BizException(ErrorCode.GAME_OVER);
+            sendError(userId, ErrorCode.GAME_OVER);
+            return false;
         }
         if (!room.isPlayer(userId)) {
-            throw new BizException(ErrorCode.NOT_YOUR_ROOM);
+            sendError(userId, ErrorCode.NOT_YOUR_ROOM);
+            return false;
         }
         markPlayerOnline(roomId, userId);
         scheduleSnapshot(userId, roomId);
+        return true;
+    }
+
+    /** 拒绝订阅时点对点回错误码(信封格式与 GameEventController 一致) */
+    private void sendError(Long userId, ErrorCode errorCode) {
+        eventPublisher.toUser(userId, "errors", "error",
+                Map.of("code", errorCode.getCode(), "message", errorCode.getDefaultMessage()));
     }
 
     /** 更新房间内在线标志 + 双方到齐时 waiting → playing(幂等) */

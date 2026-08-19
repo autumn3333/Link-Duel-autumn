@@ -26,30 +26,52 @@
 - JDK 17+、Maven 3.8+
 - Node.js 18+(npm)
 
-## ⚡ 5 分钟快速启动
+## ⚡ 3 分钟快速启动
 
 以下命令在项目根目录(Git Bash)依次复制执行:
 
 ```bash
-# 1. 环境变量(全部有本机开发默认值,直接复制即可)
+# 0. 确认 Docker Desktop 已启动(Windows 11 家庭版需 WSL2:
+#    管理员 PowerShell 执行 wsl --install,按提示重启一次)
+docker info
+
+# 1. (可选)环境变量——compose 里全部有默认值,不复制也能直接跑;只有想改端口才复制
 cp .env.example .env
 
 # 2. 启动 MySQL(宿主机 3307 端口)+ Redis(6379)
 docker compose up -d
 
-# 3. 等两个容器 healthy(重要:后端依赖 MySQL 就绪后才建表)
+# 3. 等两个容器 healthy(重要:后端依赖 MySQL 就绪后才建表;首次约 30~60 秒)
 docker compose ps
+```
 
-# 4. 启动后端(自动建表 + 自动创建种子账号;首次运行下载依赖需几分钟)
+```bash
+# 4. 启动后端(自动建表 + 自动创建种子账号;首次运行下载依赖需几分钟,后续秒起)
 cd server && mvn spring-boot:run
 ```
 
 ```bash
-# 5. 另开一个终端,启动前端
-cd client && npm install && npm run dev
+# 5. 另开一个终端,启动前端(有锁文件,推荐 npm ci,更快更稳定;装过依赖后直接 npm run dev)
+cd client && npm ci && npm run dev
 ```
 
-浏览器打开 <http://localhost:5173> 即到登录页。
+浏览器打开 <http://localhost:5173> 即到登录页,登录页有一键填充按钮。
+
+### 国内网络拉不动镜像 / npm 依赖?
+
+`docker compose up -d` 若卡在 Pulling / 报 registry-1.docker.io 连接超时,先经镜像源拉取并打回标准标签(只需一次),再重跑 `docker compose up -d`:
+
+```bash
+docker pull docker.1ms.run/library/mysql:8.0      && docker tag docker.1ms.run/library/mysql:8.0      mysql:8.0
+docker pull docker.1ms.run/library/redis:7-alpine && docker tag docker.1ms.run/library/redis:7-alpine redis:7-alpine
+docker compose up -d
+```
+
+`npm ci` 若下载缓慢,可切换 npm 镜像源:
+
+```bash
+npm config set registry https://registry.npmmirror.com
+```
 
 ## 演示账号
 
@@ -72,10 +94,10 @@ cd client && npm install && npm run dev
 ## 测试
 
 ```bash
-# 纯单元测试(无需数据库):路径校验 + 棋盘生成,23 例
+# 纯单元测试(无需数据库):路径校验 + 棋盘生成,24 例
 cd server && mvn test -Dtest='PathValidatorTest,BoardGeneratorTest'
 
-# 全量测试(需先 docker compose up -d;测试用独立 Redis 库 15,可重复运行)
+# 全量测试(需先 docker compose up -d;测试用独立 Redis 库 15,测试用户与记录自动清理,可重复运行、不污染排行榜)
 cd server && mvn test
 ```
 
@@ -122,18 +144,6 @@ docker compose down -v                  # ⚠️ 清空数据库与 Redis(重置
         ├── stores/         # Pinia(auth)
         └── utils/          # 前端镜像路径校验(仅 UX 预判)+ 常量
 ```
-
-## 录屏演示脚本(3~5 分钟)
-
-| 时间 | 内容 |
-|---|---|
-| 0:00 | `docker compose ps` 展示环境就绪;展示后端/前端启动命令 |
-| 0:30 | 普通窗口登录玩家 A,隐身窗口登录玩家 B(演示一键填充按钮) |
-| 1:00 | 双方点击「开始匹配」→ 同时进入同一房间,展示棋盘一致 |
-| 1:30 | 玩家 A 消除一对 → 玩家 B 窗口同步播放连线动画、比分 +1 |
-| 2:30 | 玩家 B 再消除一对,展示实时进度 |
-| 3:00 | 等待倒计时结束(或清空棋盘)→ 双方结算弹窗 → 返回大厅展示排行榜更新 |
-| 4:00 | (可选)关掉玩家 B 窗口展示「对手已离线」→ 重开恢复 / 或重启后端展示自动恢复 |
 
 ## 已知限制
 

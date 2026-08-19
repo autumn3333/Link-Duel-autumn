@@ -13,10 +13,11 @@ redis.call('ZADD', KEYS[1], ARGV[2], ARGV[1])
 
 local alive = {}
 if redis.call('ZCARD', KEYS[1]) >= 2 then
+    -- ZPOPMIN 返回扁平数组 {member1, score1, member2, score2},按步长 2 遍历
     local p = redis.call('ZPOPMIN', KEYS[1], 2)
-    for _, e in ipairs(p) do
-        if redis.call('EXISTS', KEYS[2] .. e[1]) == 1 then
-            alive[#alive + 1] = e
+    for i = 1, #p, 2 do
+        if redis.call('EXISTS', KEYS[2] .. p[i]) == 1 then
+            alive[#alive + 1] = {p[i], p[i + 1]}
         end
     end
     if #alive == 1 then
